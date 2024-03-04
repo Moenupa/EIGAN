@@ -4,25 +4,26 @@ Author: Enting Zhou
 Date: 06/15/2022
 Availability: https://github.com/ETZET/MCMC_GAN
 """
-from dis import dis
+# from dis import dis
 import os.path
 
+from process_data import Africa_Whole_Flat, MinMaxScaler
+
+import numpy as np
 import torch
 from torch import nn
-from torch.autograd import Variable
+from torch.nn import Module, functional as F
+from torch.optim import AdamW
 from torch import autograd
-from process_data import Africa_Whole_Flat, MinMaxScaler
+from torch.autograd import Variable
 from torch.utils.data import DataLoader
-import numpy as np
-import time
+
+from tqdm.auto import tqdm
 import wandb
-import matplotlib
 from scipy.stats import wasserstein_distance as EMD
 
-# matplotlib.use('Agg')
 
-
-class WGAN_SIMPLE(nn.Module):
+class WGAN_SIMPLE(Module):
     """
     Generative Model Architecture
 
@@ -83,7 +84,7 @@ class WGAN_SIMPLE(nn.Module):
         return self.scaler.transform(data)
 
     def optimize(self, data, output_path, batch_size=128, use_wandb=False, lr=1e-4,
-                 beta1=0.5, lambda_term=10, epochs=200, kkd=1, kkg=1, device="cpu"):
+                 betas=(0.5, 0.999), lambda_term=10, epochs: int = 200, kkd: int = 1, kkg: int = 1, device="cpu"):
 
         # normalizae data to (-1,1) range
         data = self.normalize(data)
@@ -93,10 +94,61 @@ class WGAN_SIMPLE(nn.Module):
                                 shuffle=True, num_workers=1)
 
         # Your Code Goes Here
-        
+        optimizer_gen = AdamW(self.gen.parameters(), lr=lr, betas=betas)
+        optimizer_disc = AdamW(self.disc.parameters(), lr=lr, betas=betas)
+
+        disc_fake: torch.Tensor
+        disc_real: torch.Tensor
+        for epoch in range(epochs):
+            pbar = tqdm(dataloader, total=len(dataloader))
+            for batch in pbar:
+                batch: torch.Tensor = batch.to(device).float()
+                batch_size = batch.size(0)
+
+                # update disc, lock gen to save computation
+                with self.gen.eval():
+                    for _ in range(kkd):
+                        optimizer_disc.zero_grad()
+
+                        noise = torch.randn(
+                            batch_size, self.nlatent, device=device)
+                        fake_batch = self.gen(noise)
+
+                        disc_fake = self.disc(fake_batch)
+                        disc_real = self.disc(batch)
+                        gp = self.calculate_gradient_penalty(
+                            batch, fake_batch, lambda_term)
+                        disc_loss = disc_fake.mean() - disc_real.mean() + gp
+                        disc_loss.backward()
+                        optimizer_disc.step()
+
+                # update gen, lock disc
+                with self.disc.eval():
+                    for _ in range(kkg):
+                        optimizer_gen.zero_grad()
+
+                        noise = torch.randn(
+                            batch_size, self.nlatent, device=device)
+                        fake_batch = self.gen(noise)
+
+                        disc_fake = self.disc(fake_batch)
+                        gen_loss = -disc_fake.mean()
+                        gen_loss.backward()
+
+                        optimizer_gen.step()
+
+                _report = {"Discriminator Loss": disc_loss.item(),
+                           "Generator Loss": gen_loss.item()}
+                pbar.set_postfix(_report)
+                if use_wandb:
+                    wandb.log(_report)
+
+            if epoch % 100 == 0:
+                if os.path.exists(output_path):
+                    torch.save(self, f'{output_path}/WGAN_{epoch}.pt')
         # Your Code Ends Here
 
-    def calculate_gradient_penalty(self, real_images, fake_images, lambda_term):
+    def calculate_gradient_penalty(self, real_images: torch.Tensor, fake_images: torch.Tensor, lambda_term: float) -> torch.Tensor:
         batch_size = real_images.shape[0]
         eta = torch.FloatTensor(batch_size, 1).uniform_(0, 1)
         eta = eta.expand(batch_size, real_images.size(1)).to(self.device)
@@ -123,7 +175,7 @@ class WGAN_SIMPLE(nn.Module):
         self.load_state_dict(checkpoint["model_state_dict"])
         self.scaler = checkpoint["scaler"]
 
-    def generate(self, num=50000) -> np.ndarray:
+    def generate(self, num: int = 50000) -> np.ndarray:
         fake_data = np.zeros((num, self.ndim))
         # if num is divisible by 100, generate by batch, else generate one by one
         if num % 100 == 0:
