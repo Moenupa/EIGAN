@@ -106,44 +106,43 @@ class WGAN_SIMPLE(Module):
                 batch_size = batch.size(0)
 
                 # update disc, lock gen to save computation
-                with self.gen.eval():
-                    for _ in range(kkd):
-                        optimizer_disc.zero_grad()
+                for _ in range(kkd):
+                    optimizer_disc.zero_grad()
 
-                        noise = torch.randn(
-                            batch_size, self.nlatent, device=device)
-                        fake_batch = self.gen(noise)
+                    noise = torch.randn(
+                        batch_size, self.nlatent, device=device)
+                    fake_batch = self.gen(noise)
 
-                        disc_fake = self.disc(fake_batch)
-                        disc_real = self.disc(batch)
-                        gp = self.calculate_gradient_penalty(
-                            batch, fake_batch, lambda_term)
-                        disc_loss = disc_fake.mean() - disc_real.mean() + gp
-                        disc_loss.backward()
-                        optimizer_disc.step()
+                    disc_fake = self.disc(fake_batch)
+                    disc_real = self.disc(batch)
+                    gp = self.calculate_gradient_penalty(
+                        batch, fake_batch, lambda_term)
+                    disc_loss = disc_fake.mean() - disc_real.mean() + gp
+                    disc_loss.backward()
+                    optimizer_disc.step()
 
                 # update gen, lock disc
-                with self.disc.eval():
-                    for _ in range(kkg):
-                        optimizer_gen.zero_grad()
+                for _ in range(kkg):
+                    optimizer_gen.zero_grad()
 
-                        noise = torch.randn(
-                            batch_size, self.nlatent, device=device)
-                        fake_batch = self.gen(noise)
+                    noise = torch.randn(
+                        batch_size, self.nlatent, device=device)
+                    fake_batch = self.gen(noise)
 
-                        disc_fake = self.disc(fake_batch)
-                        gen_loss = -disc_fake.mean()
-                        gen_loss.backward()
+                    disc_fake = self.disc(fake_batch)
+                    gen_loss = -disc_fake.mean()
+                    gen_loss.backward()
 
-                        optimizer_gen.step()
+                    optimizer_gen.step()
 
-                _report = {"Discriminator Loss": disc_loss.item(),
-                           "Generator Loss": gen_loss.item()}
+                _report = {"Epoch": f'{epoch:03d}',
+                           "Discriminator Loss": f'{disc_loss.item():.2f}',
+                           "Generator Loss": f'{gen_loss.item():.2f}'}
                 pbar.set_postfix(_report)
                 if use_wandb:
                     wandb.log(_report)
 
-            if epoch % 100 == 0:
+            if epoch % 50 == 49:
                 if os.path.exists(output_path):
                     torch.save(self, f'{output_path}/WGAN_{epoch}.pt')
         # Your Code Ends Here
