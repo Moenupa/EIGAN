@@ -18,6 +18,23 @@ class Africa_Whole_Flat(Dataset):
         sample_np = self.data[idx, :]
         sample = torch.from_numpy(sample_np)
         return sample
+    
+    
+class AfricaWholeFlatDataset(Dataset):
+    """
+    Custom Data set for pytorch loading, the right way
+    """
+    
+    def __init__(self, data: np.ndarray) -> None:
+        super().__init__()
+        self.data = torch.from_numpy(data)
+        self.data.requires_grad(False)
+    
+    def __len__(self):
+        return self.data.size(0)
+
+    def __getitem__(self, index) -> torch.Tensor:
+        return self.data[index]
 
 
 class MinMaxScaler():

@@ -7,18 +7,18 @@ Availability: https://github.com/ETZET/MCMC_GAN
 # from dis import dis
 import os.path
 
-from process_data import Africa_Whole_Flat, MinMaxScaler
+from process_data import Africa_Whole_Flat, MinMaxScaler, AfricaWholeFlatDataset
 
 import numpy as np
 import torch
 from torch import nn
 from torch.nn import Module, functional as F
-from torch.optim import AdamW
+from torch.optim import Adam
 from torch import autograd
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
 
-from tqdm.auto import tqdm
+from tqdm import tqdm
 import wandb
 from scipy.stats import wasserstein_distance as EMD
 
@@ -94,14 +94,14 @@ class WGAN_SIMPLE(Module):
                                 shuffle=True, num_workers=1)
 
         # Your Code Goes Here
-        optimizer_gen = AdamW(self.gen.parameters(), lr=lr, betas=betas)
-        optimizer_disc = AdamW(self.disc.parameters(), lr=lr, betas=betas)
+        optimizer_gen = Adam(self.gen.parameters(), lr=lr, betas=betas)
+        optimizer_disc = Adam(self.disc.parameters(), lr=lr, betas=betas)
 
         disc_fake: torch.Tensor
         disc_real: torch.Tensor
-        for epoch in range(epochs):
-            pbar = tqdm(dataloader, total=len(dataloader))
-            for batch in pbar:
+        pbar = tqdm(range(epochs))
+        for epoch in pbar:
+            for batch in dataloader:
                 batch: torch.Tensor = batch.to(device).float()
                 batch_size = batch.size(0)
 
@@ -110,14 +110,14 @@ class WGAN_SIMPLE(Module):
                     optimizer_disc.zero_grad()
 
                     noise = torch.randn(
-                        batch_size, self.nlatent, device=device)
+                        batch_size, self.nlatent, requires_grad=False, device=device)
                     fake_batch = self.gen(noise)
 
                     disc_fake = self.disc(fake_batch)
                     disc_real = self.disc(batch)
                     gp = self.calculate_gradient_penalty(
                         batch, fake_batch, lambda_term)
-                    disc_loss = disc_fake.mean() - disc_real.mean() + gp
+                    disc_loss = disc_fake.mean() - disc_real.mean() + gp  
                     disc_loss.backward()
                     optimizer_disc.step()
 
@@ -126,7 +126,7 @@ class WGAN_SIMPLE(Module):
                     optimizer_gen.zero_grad()
 
                     noise = torch.randn(
-                        batch_size, self.nlatent, device=device)
+                        batch_size, self.nlatent, requires_grad=False, device=device)
                     fake_batch = self.gen(noise)
 
                     disc_fake = self.disc(fake_batch)
@@ -136,15 +136,15 @@ class WGAN_SIMPLE(Module):
                     optimizer_gen.step()
 
                 _report = {"Epoch": f'{epoch:03d}',
-                           "Discriminator Loss": f'{disc_loss.item():.2f}',
-                           "Generator Loss": f'{gen_loss.item():.2f}'}
+                           "Disc Loss": f'{disc_loss.item():8.2f}',
+                           "Gen Loss": f'{gen_loss.item():8.2f}'}
                 pbar.set_postfix(_report)
                 if use_wandb:
                     wandb.log(_report)
 
-            if epoch % 50 == 49:
-                if os.path.exists(output_path):
-                    torch.save(self, f'{output_path}/WGAN_{epoch}.pt')
+        if os.path.exists(output_path):
+            torch.save(
+                self, f'{output_path}/WGAN_lr{lr:.1g}_b{batch_size}_{epoch}.pt')
         # Your Code Ends Here
 
     def calculate_gradient_penalty(self, real_images: torch.Tensor, fake_images: torch.Tensor, lambda_term: float) -> torch.Tensor:
