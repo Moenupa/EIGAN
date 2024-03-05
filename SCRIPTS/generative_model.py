@@ -7,7 +7,7 @@ Availability: https://github.com/ETZET/MCMC_GAN
 # from dis import dis
 import os.path
 
-from process_data import Africa_Whole_Flat, MinMaxScaler, AfricaWholeFlatDataset
+from process_data import AfricaWholeFlatDataset
 
 import numpy as np
 import torch
@@ -34,7 +34,7 @@ class WGAN_SIMPLE(Module):
     Citation: Gulrajani, Ahmed & Arjovsky. Improved training of wasserstein gans. Adv. Neural Inf. Process. Syst.
     """
 
-    def __init__(self, ndim, nhid=300, nlatent=100, device="cpu"):
+    def __init__(self, ndim: int = 2382, nhid: int = 300, nlatent: int = 100, device="cpu"):
         """
         :param ndim: Number of feature in input data
         :param nhid: Number of hidden units per layer
@@ -47,7 +47,6 @@ class WGAN_SIMPLE(Module):
         self.ndim = ndim
         self.nlatent = nlatent
         self.device = device
-        self.scaler = None
 
         self.gen = nn.Sequential(
             nn.Linear(self.nlatent, nhid),
@@ -78,20 +77,13 @@ class WGAN_SIMPLE(Module):
         self.gen.to(device)
         self.disc.to(device)
 
-    def normalize(self, data):
-        self.scaler = MinMaxScaler()
-        self.scaler.fit(data)
-        return self.scaler.transform(data)
-
-    def optimize(self, data, output_path, batch_size=128, use_wandb=False, lr=1e-4,
+    def optimize(self, normalized_data, output_path, batch_size=128, use_wandb=False, lr=1e-4,
                  betas=(0.5, 0.999), lambda_term=10, epochs: int = 200, kkd: int = 1, kkg: int = 1, device="cpu"):
 
-        # normalizae data to (-1,1) range
-        data = self.normalize(data)
         # construct dataset and dataloader for batch training
-        map_dataset = Africa_Whole_Flat(data)
+        map_dataset = AfricaWholeFlatDataset(normalized_data)
         dataloader = DataLoader(map_dataset, batch_size=batch_size,
-                                shuffle=True, num_workers=1)
+                                shuffle=True, num_workers=8)
 
         # Your Code Goes Here
         optimizer_gen = Adam(self.gen.parameters(), lr=lr, betas=betas)
@@ -99,26 +91,30 @@ class WGAN_SIMPLE(Module):
 
         disc_fake: torch.Tensor
         disc_real: torch.Tensor
-        pbar = tqdm(range(epochs))
-        for epoch in pbar:
+
+        self.train()
+        for epoch in tqdm(range(epochs)):
+
             for batch in dataloader:
                 batch: torch.Tensor = batch.to(device).float()
-                batch_size = batch.size(0)
+                size = batch.size(0)
 
                 # update disc, lock gen to save computation
                 for _ in range(kkd):
                     optimizer_disc.zero_grad()
 
                     noise = torch.randn(
-                        batch_size, self.nlatent, requires_grad=False, device=device)
-                    fake_batch = self.gen(noise)
+                        size, self.nlatent, device=device)
+                    fake_batch = self.gen(noise).detach()
 
                     disc_fake = self.disc(fake_batch)
                     disc_real = self.disc(batch)
-                    gp = self.calculate_gradient_penalty(
-                        batch, fake_batch, lambda_term)
-                    disc_loss = disc_fake.mean() - disc_real.mean() + gp  
+                    gp = self.calculate_gradient_penalty(batch, fake_batch)
+
+                    neg_ewd = disc_fake.mean() - disc_real.mean()
+                    disc_loss = neg_ewd + lambda_term * gp
                     disc_loss.backward()
+
                     optimizer_disc.step()
 
                 # update gen, lock disc
@@ -126,28 +122,28 @@ class WGAN_SIMPLE(Module):
                     optimizer_gen.zero_grad()
 
                     noise = torch.randn(
-                        batch_size, self.nlatent, requires_grad=False, device=device)
+                        size, self.nlatent, device=device)
                     fake_batch = self.gen(noise)
 
                     disc_fake = self.disc(fake_batch)
+
                     gen_loss = -disc_fake.mean()
                     gen_loss.backward()
 
                     optimizer_gen.step()
 
-                _report = {"Epoch": f'{epoch:03d}',
-                           "Disc Loss": f'{disc_loss.item():8.2f}',
-                           "Gen Loss": f'{gen_loss.item():8.2f}'}
-                pbar.set_postfix(_report)
                 if use_wandb:
-                    wandb.log(_report)
+                    wandb.log({"disc_loss": disc_loss,
+                              "gen_loss": gen_loss,
+                               "ewd": -neg_ewd})
 
-        if os.path.exists(output_path):
-            torch.save(
-                self, f'{output_path}/WGAN_lr{lr:.1g}_b{batch_size}_{epoch}.pt')
+            if (epoch + 1) % 50 == 0:
+                if os.path.exists(output_path):
+                    save_name = f'{output_path}/WGAN_lr{lr:.1g}_{betas[0]}_b{batch_size}_{epoch}.pt'
+                    torch.save(self, save_name)
         # Your Code Ends Here
 
-    def calculate_gradient_penalty(self, real_images: torch.Tensor, fake_images: torch.Tensor, lambda_term: float) -> torch.Tensor:
+    def calculate_gradient_penalty(self, real_images: torch.Tensor, fake_images: torch.Tensor) -> torch.Tensor:
         batch_size = real_images.shape[0]
         eta = torch.FloatTensor(batch_size, 1).uniform_(0, 1)
         eta = eta.expand(batch_size, real_images.size(1)).to(self.device)
@@ -167,12 +163,11 @@ class WGAN_SIMPLE(Module):
                                       prob_interpolated.size()).to(self.device),
                                   create_graph=True, retain_graph=True)[0]
         grad_penalty = ((gradients.norm(2, dim=1) - 1)
-                        ** 2).mean() * lambda_term
+                        ** 2).mean()
         return grad_penalty
 
     def load(self, checkpoint):
         self.load_state_dict(checkpoint["model_state_dict"])
-        self.scaler = checkpoint["scaler"]
 
     def generate(self, num: int = 50000) -> np.ndarray:
         fake_data = np.zeros((num, self.ndim))
@@ -187,13 +182,10 @@ class WGAN_SIMPLE(Module):
             for i in range(num):
                 fake_data[i, :] = self.gen(torch.randn(
                     1, self.nlatent, device=self.device)).cpu().detach().numpy()
-        # scaler the data back to original range
-        fake_data_scaled = self.scaler.inverse_transform(fake_data)
-        del fake_data
-        return fake_data_scaled
+        return fake_data
 
 
-def eval(model, data):
+def eval_model(model, data):
     dim = data.shape[1]
 
     # generate fake data using Generator

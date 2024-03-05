@@ -1,6 +1,8 @@
 import torch
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
+import os.path
+import pickle
 
 
 class Africa_Whole_Flat(Dataset):
@@ -18,18 +20,17 @@ class Africa_Whole_Flat(Dataset):
         sample_np = self.data[idx, :]
         sample = torch.from_numpy(sample_np)
         return sample
-    
-    
+
+
 class AfricaWholeFlatDataset(Dataset):
     """
     Custom Data set for pytorch loading, the right way
     """
-    
+
     def __init__(self, data: np.ndarray) -> None:
         super().__init__()
         self.data = torch.from_numpy(data)
-        self.data.requires_grad(False)
-    
+
     def __len__(self):
         return self.data.size(0)
 
@@ -57,7 +58,7 @@ class MinMaxScaler():
         max = np.max(data, axis=0)
         self.diff = max - self.min
 
-    def transform(self, data: np.ndarray):
+    def transform(self, data: np.ndarray) -> np.ndarray:
         """
         Transform the input data to range, using previous fitted min and max
         :param data: np.ndarray, expected arrangement: row as instances of data and column as features of data
@@ -94,6 +95,19 @@ def slice_dataset(data: np.ndarray, slice_ratio=None):
         end_point = int(np.floor(ratio*length))
         data_slices.append(data[:end_point, :])
     return data_slices
+
+
+def load_csv_with_cache(path: str) -> np.ndarray:
+    cache = f'{path}.pkl'
+
+    if os.path.exists(cache):
+        with open(cache, 'rb') as handler:
+            return pickle.load(handler)
+
+    data = np.genfromtxt(path, delimiter=',', skip_header=True)
+    with open(cache, 'wb') as handler:
+        pickle.dump(data, handler)
+    return data
 
 
 if __name__ == "__main__":
