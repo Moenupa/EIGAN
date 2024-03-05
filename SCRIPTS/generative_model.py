@@ -76,8 +76,14 @@ class WGAN_SIMPLE(Module):
 
         self.gen.to(device)
         self.disc.to(device)
+        
+    def sample_z(self, *size, is_normalized: bool = False) -> torch.Tensor:
+        if is_normalized:
+            return torch.randn(*size, device=self.device)
+    
+        return torch.FloatTensor(*size).uniform_(-1, 1).to(self.device)
 
-    def optimize(self, normalized_data, output_path, batch_size=128, use_wandb=False, lr=1e-4,
+    def optimize(self, normalized_data: np.ndarray, output_path, batch_size=128, use_wandb=False, lr=1e-4,
                  betas=(0.5, 0.999), lambda_term=10, epochs: int = 200, kkd: int = 1, kkg: int = 1, device="cpu"):
 
         # construct dataset and dataloader for batch training
@@ -102,27 +108,27 @@ class WGAN_SIMPLE(Module):
                 # update disc, lock gen to save computation
                 for _ in range(kkd):
                     optimizer_disc.zero_grad()
+                    optimizer_gen.zero_grad()
 
-                    noise = torch.randn(
-                        size, self.nlatent, device=device)
+                    noise = self.sample_z(size, self.nlatent)
                     fake_batch = self.gen(noise).detach()
 
                     disc_fake = self.disc(fake_batch)
                     disc_real = self.disc(batch)
                     gp = self.calculate_gradient_penalty(batch, fake_batch)
 
-                    neg_ewd = disc_fake.mean() - disc_real.mean()
-                    disc_loss = neg_ewd + lambda_term * gp
+                    neg_wd = disc_fake.mean() - disc_real.mean()
+                    disc_loss = neg_wd + lambda_term * gp
                     disc_loss.backward()
 
                     optimizer_disc.step()
 
                 # update gen, lock disc
                 for _ in range(kkg):
+                    optimizer_disc.zero_grad()
                     optimizer_gen.zero_grad()
 
-                    noise = torch.randn(
-                        size, self.nlatent, device=device)
+                    noise = self.sample_z(size, self.nlatent)
                     fake_batch = self.gen(noise)
 
                     disc_fake = self.disc(fake_batch)
@@ -135,12 +141,17 @@ class WGAN_SIMPLE(Module):
                 if use_wandb:
                     wandb.log({"disc_loss": disc_loss,
                               "gen_loss": gen_loss,
-                               "ewd": -neg_ewd})
+                               "ewd": -neg_wd})
 
-            if (epoch + 1) % 50 == 0:
+            if (epoch + 1) % 10 == 0:
+                avg, std, emd = eval_model(self, normalized_data)
+                if use_wandb:
+                    wandb.log({"avg": avg, 'std': std, 'emd': emd})
+                
                 if os.path.exists(output_path):
-                    save_name = f'{output_path}/WGAN_lr{lr:.1g}_{betas[0]}_b{batch_size}_{epoch}.pt'
-                    torch.save(self, save_name)
+                    exp_dir =f'{output_path}/WGAN_lr{lr:.0e}_{betas[0]}_b{batch_size}'
+                    os.makedirs(exp_dir)
+                    torch.save(self, f'{exp_dir}/{epoch}.pt')
         # Your Code Ends Here
 
     def calculate_gradient_penalty(self, real_images: torch.Tensor, fake_images: torch.Tensor) -> torch.Tensor:
@@ -169,34 +180,34 @@ class WGAN_SIMPLE(Module):
     def load(self, checkpoint):
         self.load_state_dict(checkpoint["model_state_dict"])
 
-    def generate(self, num: int = 50000) -> np.ndarray:
+    def generate(self, num: int = 50000, normed: bool = False) -> np.ndarray:
         fake_data = np.zeros((num, self.ndim))
         # if num is divisible by 100, generate by batch, else generate one by one
         if num % 100 == 0:
             for i in range(num // 100):
                 l, r = 100 * i, 100 * (i+1)
                 fake_data[l:r, :] = \
-                    self.gen(torch.randn(100, self.nlatent,
-                             device=self.device)).cpu().detach().numpy()
+                    self.gen(self.sample_z(100, self.nlatent, is_normalized=normed)).cpu().detach().numpy()
         else:
             for i in range(num):
-                fake_data[i, :] = self.gen(torch.randn(
-                    1, self.nlatent, device=self.device)).cpu().detach().numpy()
+                fake_data[i, :] = self.gen(self.sample_z(
+                    1, self.nlatent)).cpu().detach().numpy()
         return fake_data
 
 
-def eval_model(model, data):
+def eval_model(model: WGAN_SIMPLE, data: np.ndarray, normed: bool = False):
     dim = data.shape[1]
 
     # generate fake data using Generator
     fake_data = np.zeros((50000, dim))
     for i in range(500):
-        left_idx = 100 * i
-        right_idx = 100 * (i+1)
+        l, r = 100 * i, 100 * (i+1)
         with torch.no_grad():
-            fake_batch = model.gen(torch.randn(
-                100, model.nlatent, device=model.device)).cpu().detach().numpy()
-        fake_data[left_idx:right_idx, :] = fake_batch
+            fake_batch = \
+                model.gen(
+                    model.sample_z(100, model.nlatent, is_normalized=normed)
+                ).cpu().detach().numpy()
+        fake_data[l:r, :] = fake_batch
     # compare mean
     real_avg = np.mean(data, axis=0)
     fake_avg = np.mean(fake_data, axis=0)

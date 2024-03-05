@@ -46,7 +46,7 @@ def parse_arguments():
     parser.add_argument("-b", "--batch-size", type=int,
                         default=128, help="batch size for the optimizer")
     parser.add_argument("--beta1", type=float,
-                        default=0.9, help="beta1 in Adam optimizer")
+                        default=0.5, help="beta1 in Adam optimizer")
     parser.add_argument("--beta2", type=float,
                         default=0.999, help="beta2 in Adam optimizer")
     parser.add_argument("--use-wandb", type=bool,

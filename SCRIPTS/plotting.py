@@ -1,6 +1,7 @@
 import numpy as np
-# import seaborn as sns
+import seaborn as sns
 import matplotlib.pyplot as plt
+import torch
 
 
 def plot_mean_std(fake_distribution: np.ndarray,
@@ -24,3 +25,28 @@ def plot_mean_std(fake_distribution: np.ndarray,
         )
         _ax.set_title(_title)
         plt.colorbar(_fig, ax=_ax)
+
+
+def plot_distribution(fake: torch.Tensor, real: torch.Tensor, noise: torch.Tensor, model):
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    ax0, ax1, ax2 = axes.flatten()
+    sns.histplot(fake[:, 0], color='b', label='fake', ax=ax0)
+    sns.histplot(real[:, 0], color='r', label='real', ax=ax0)
+
+    with torch.no_grad():
+        model.eval()
+        _fake = model.disc(fake).numpy().flatten()
+        _real = model.disc(real).numpy().flatten()
+        _random = model.disc(noise).numpy().flatten()
+
+    sns.histplot(_fake, color='b', label='fake', ax=ax1)
+    sns.histplot(_real, color='r', label='real', ax=ax1)
+    sns.histplot(_random, color='g', label='noise', ax=ax1)
+    plt.legend()
+
+    sns.histplot((real.mean(dim=0)-fake.mean(dim=0))
+                 .numpy().flatten(), ax=ax2)
+
+    ax0.set_title('Distribution on Feature 0')
+    ax1.set_title('Discriminator Output')
+    ax2.set_title('Mean Difference Real-Fake')
