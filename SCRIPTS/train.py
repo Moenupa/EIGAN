@@ -1,4 +1,4 @@
-from generative_model import WGAN_SIMPLE
+from generative_model import WGAN_SIMPLE, WGAN_SN
 from process_data import load_csv_with_cache, MinMaxScaler
 
 import argparse
@@ -28,17 +28,21 @@ def train(args=None):
         wandb.init(project="EIGAN", config=args)
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    model = WGAN_SIMPLE(ndim=2382, device=device)
-    model.optimize(normed_data, MODEL_ROOT, use_wandb=args.use_wandb,
+    model = WGAN_SN(device=device)
+    exp_root = f'{MODEL_ROOT}/{args.model}_lr{args.lr:.0e}_{args.beta1}_b{args.batch_size}'
+
+    model.optimize(normed_data, exp_root, use_wandb=args.use_wandb,
                    lr=args.lr, batch_size=args.batch_size,
                    betas=(args.beta1, args.beta2),
-                   epochs=args.epochs, device=device)
+                   epochs=args.epochs)
 
     return model
 
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=str,
+                        default="WGAN", help="model name")
     parser.add_argument("--epochs", type=int,
                         default=200, help="number of epochs")
     parser.add_argument("--lr", type=float,
