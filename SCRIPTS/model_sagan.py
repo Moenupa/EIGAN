@@ -10,11 +10,9 @@ from torch import nn
 from torch.nn import Module
 from torch.nn.utils.parametrizations import spectral_norm
 from torch.optim import Adam
-from torch import autograd
-from torch.autograd import Variable
 from torch.utils.data import DataLoader
 
-from tqdm import tqdm
+from tqdm import tqdm, trange
 import wandb
 from scipy.stats import wasserstein_distance as EMD
 
@@ -22,23 +20,34 @@ from scipy.stats import wasserstein_distance as EMD
 class SAWGAN(Module):
     """self attention wgan"""
 
-    def __init__(self, n_feat: int = 2382, z_dim: int = 16, hid_dim: int = 16, uniform_z: bool = True, device="cpu") -> None:
+    def __init__(self, n_feat: int = 2382, hid_dim: int = 64, uniform_z: bool = True, device="cpu") -> None:
         super().__init__()
 
         self.n_feat = n_feat
-        self.z_dim = z_dim
         self.device = device
         self.uniform_z = uniform_z
 
-        self.gen = Generator(n_feat, z_dim, hid_dim)
+        self.gen = Generator(n_feat, hid_dim)
         self.disc = Discriminator(n_feat, hid_dim)
 
         self.gen.to(device)
         self.disc.to(device)
+        
+        self.gen.apply(self.weights_init)
+        self.disc.apply(self.weights_init)
+        
+    def weights_init(self, m):
+        classname = m.__class__.__name__
+        if 'Conv' in classname:
+            nn.init.normal_(m.weight.data, 0.0, 0.02)
+        elif 'BatchNorm' in classname:
+            nn.init.normal_(m.weight.data, 1.0, 0.02)
+            nn.init.constant_(m.bias.data, 0.0)
 
     def optimize(self, normalized_data: np.ndarray, output_path: str, batch_size=128, use_wandb=False, lr=2e-4,
-                 betas=(0.5, 0.999), epochs: int = 200, kkd: int = 1, kkg: int = 1):
+                 betas=(0.5, 0.999), epochs: int = 10, kkd: int = 1, kkg: int = 1):
         map_dataset = AfricaWholeFlatDataset(normalized_data)
+        map_dataset.data = map_dataset.data.view(-1, 1, self.n_feat)
         dataloader = DataLoader(map_dataset, batch_size=batch_size,
                                 shuffle=True, num_workers=8)
 
@@ -50,18 +59,18 @@ class SAWGAN(Module):
         disc_real: torch.Tensor
 
         self.train()
-        for epoch in range(epochs):
+        for epoch in trange(epochs):
 
-            for batch in tqdm(dataloader):
+            for batch in dataloader:
                 batch: torch.Tensor = batch.to(self.device).float()
                 size = batch.size(0)
-                batch = batch.view(size, 1, self.n_feat)
+                # print(torch.cuda.memory_allocated())
 
                 # update disc, lock gen to save computation
                 for _ in range(kkd):
                     optimizer_disc.zero_grad()
 
-                    noise = sample_z(size, self.z_dim, self.n_feat,
+                    noise = sample_z(size, 1, self.n_feat,
                                      device=self.device, uniform=self.uniform_z)
                     fake_batch = self.gen(noise).detach()
 
@@ -78,7 +87,7 @@ class SAWGAN(Module):
                     optimizer_disc.zero_grad()
                     optimizer_gen.zero_grad()
 
-                    noise = sample_z(size, self.z_dim, self.n_feat,
+                    noise = sample_z(size, 1, self.n_feat,
                                      device=self.device, uniform=self.uniform_z)
                     fake_batch = self.gen(noise)
 
@@ -94,7 +103,7 @@ class SAWGAN(Module):
                               "gen_loss": gen_loss,
                                "loss": -disc_loss})
 
-            if (epoch + 1) % 10 == 0:
+            if (epoch + 1) % 1 == 0:
                 if use_wandb:
                     avg, std, emd = eval_model(self, normalized_data)
                     wandb.log({"avg": avg, 'std': std, 'emd': emd})
@@ -107,11 +116,10 @@ class SAWGAN(Module):
         fake_data = np.zeros((n, self.n_feat))
         # if num is divisible by 100, generate by batch, else generate one by one
         for l in range(0, n, 100):
-            fake_data[l:l+100, :] = self.gen(
-                sample_z(n, self.z_dim, self.n_feat,
-                         device=self.device,
-                         uniform=self.uniform_z)
-            ).cpu().detach().numpy()
+            noise = sample_z(100, 1, self.n_feat,
+                             device=self.device,
+                             uniform=self.uniform_z)
+            fake_data[l:l+100, :] = self.gen(noise).cpu().detach().numpy().squeeze(axis=1)
         return fake_data
 
 
@@ -128,7 +136,7 @@ class SelfAttn(nn.Module):
         self.v = spectral_norm(nn.Conv1d(in_channels=in_dim,
                                          out_channels=in_dim,
                                          kernel_size=1))
-        self.gamma = nn.Parameter(torch.tensor(0.0))
+        self.gamma = nn.Parameter(torch.tensor(0.01))
 
         self.softmax = nn.Softmax(dim=-1)
 
@@ -159,11 +167,11 @@ class SelfAttn(nn.Module):
 
 class Generator(nn.Module):
 
-    def __init__(self, n_feat: int = 2382, z_dim=16, hid_dim=16):
+    def __init__(self, n_feat: int = 2382, hid_dim: int = 8):
         super().__init__()
 
         self.l1 = nn.Sequential(
-            spectral_norm(nn.Conv1d(z_dim, hid_dim, kernel_size=1)),
+            spectral_norm(nn.Conv1d(1, hid_dim, kernel_size=1)),
             nn.BatchNorm1d(hid_dim),
             nn.ReLU()
         )
@@ -177,20 +185,17 @@ class Generator(nn.Module):
 
     def forward(self, z: torch.Tensor):
         # z as a (batch, z_dim, n_feat) tensor
-        assert z.size(1) == 16, f'z.size(1)={z.size(1)}'
 
         x = self.l1(z)
-        assert x.size(1) == 16, f'x.size(1)={x.size(1)}'
         x, p = self.attn(x)
         x = self.l2(x)
-        assert x.size(1) == 1, f'x.size(1)={x.size(1)}'
 
         return x  # , p
 
 
 class Discriminator(nn.Module):
 
-    def __init__(self, n_feat: int = 2382, hid_dim: int = 16):
+    def __init__(self, n_feat: int = 2382, hid_dim: int = 8):
         super().__init__()
 
         self.l1 = nn.Sequential(
@@ -200,18 +205,11 @@ class Discriminator(nn.Module):
         )
         self.attn = SelfAttn(hid_dim)
 
-        self.l2 = nn.Sequential(
-            spectral_norm(nn.Conv1d(hid_dim, hid_dim, kernel_size=1)),
-            nn.LeakyReLU(0.1),
-            nn.Dropout(0.4)
-        )
-
         self.fc = nn.Linear(n_feat * hid_dim, 1)
 
     def forward(self, x: torch.Tensor):
         x = self.l1(x)
         x, p = self.attn(x)
-        x = self.l2(x)
         x = x.flatten(1, -1)
         x = self.fc(x)
 

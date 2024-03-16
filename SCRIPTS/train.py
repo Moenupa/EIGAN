@@ -27,17 +27,15 @@ def train(args=None):
     normed_data = scaler.transform(data)
 
     if args.use_wandb:
-        wandb.init(project="EIGAN", config=args)
+        wandb.init(project="EI3_GAN", config=args)
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    model = SAWGAN(device=device)
-    exp_root = f'{MODEL_ROOT}/{args.model}_lr{args.lr:.0e}_{args.beta1}_b{args.batch_size}'
-    os.makedirs(exp_root)
+    model = WGAN_SIMPLE(uniform_z=True, device=device)
+    exp_root = f'{MODEL_ROOT}/{args.model}_glr{args.g_lr:.0e}_dlr{args.d_lr:.0e}' \
+               f'_beta{args.beta1}_{args.beta2}_b{args.batch_size}'
+    os.makedirs(exp_root, exist_ok=True)
 
-    model.optimize(normed_data, exp_root, use_wandb=args.use_wandb,
-                   lr=args.lr, batch_size=args.batch_size,
-                   betas=(args.beta1, args.beta2),
-                   epochs=args.epochs)
+    model.optimize(normed_data, exp_root, args)
 
     return model
 
@@ -48,8 +46,10 @@ def parse_arguments():
                         default="WGAN", help="model name")
     parser.add_argument("--epochs", type=int,
                         default=200, help="number of epochs")
-    parser.add_argument("--lr", type=float,
-                        default=2e-4, help="learning rate for the optimizer")
+    parser.add_argument("--g-lr", type=float,
+                        default=2e-4, help="learning rate for the gen optimizer")
+    parser.add_argument("--d-lr", type=float,
+                        default=2e-4, help="learning rate for the disc optimizer")
     parser.add_argument("-b", "--batch-size", type=int,
                         default=128, help="batch size for the optimizer")
     parser.add_argument("-z", "--uniform-noise", type=bool,
@@ -58,6 +58,10 @@ def parse_arguments():
                         default=0.5, help="beta1 in Adam optimizer")
     parser.add_argument("--beta2", type=float,
                         default=0.999, help="beta2 in Adam optimizer")
+    parser.add_argument("--kkd", type=int,
+                        default=1, help="disc update frequency")
+    parser.add_argument("--kkg", type=int,
+                        default=1, help="gen update frequency")
     parser.add_argument("--use-wandb", type=bool,
                         default=False, help="whether to use wandb or not")
     args = parser.parse_args()

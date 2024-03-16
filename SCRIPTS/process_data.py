@@ -38,6 +38,29 @@ class AfricaWholeFlatDataset(Dataset):
         return self.data[index]
 
 
+class AfricaWholeFlatImageDataset(Dataset):
+    """
+    load as image
+    """
+
+    def __init__(self, data: np.ndarray) -> None:
+        super().__init__()
+        self.data = torch.from_numpy(data)
+
+    def __len__(self):
+        return self.data.size(0)
+
+    def __getitem__(self, index) -> torch.Tensor:
+        return self.data[index]
+    
+    def arr2img():
+        pass
+        
+    def img2arr():
+        pass
+        
+
+
 class MinMaxScaler():
     """
     A data scaler that scale data to given range and scale back to initial range

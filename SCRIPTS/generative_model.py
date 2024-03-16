@@ -13,13 +13,12 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import Module
-from torch.nn.utils.parametrizations import spectral_norm
-from torch.optim import Adam
+from torch.optim import AdamW
 from torch import autograd
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
 
-from tqdm import tqdm
+from tqdm import tqdm, trange
 import wandb
 from scipy.stats import wasserstein_distance as EMD
 
@@ -86,30 +85,30 @@ class WGAN_SIMPLE(Module):
         self.gen.to(device)
         self.disc.to(device)
 
-    def optimize(self, normalized_data: np.ndarray, output_path, batch_size=128, use_wandb=False, lr=1e-4,
-                 betas=(0.5, 0.999), lambda_term=10, epochs: int = 200, kkd: int = 1, kkg: int = 1, device="cpu"):
+    def optimize(self, normalized_data: np.ndarray, output_path, args, lambda_term=10):
 
         # construct dataset and dataloader for batch training
         map_dataset = AfricaWholeFlatDataset(normalized_data)
-        dataloader = DataLoader(map_dataset, batch_size=batch_size,
+        dataloader = DataLoader(map_dataset, batch_size=args.batch_size,
                                 shuffle=True, num_workers=8)
 
         # Your Code Goes Here
-        optimizer_gen = Adam(self.gen.parameters(), lr=lr, betas=betas)
-        optimizer_disc = Adam(self.disc.parameters(), lr=lr, betas=betas)
+        betas = (args.beta1, args.beta2)
+        optimizer_gen = AdamW(self.gen.parameters(), lr=args.g_lr, betas=betas)
+        optimizer_disc = AdamW(self.disc.parameters(), lr=args.d_lr, betas=betas)
 
         disc_fake: torch.Tensor
         disc_real: torch.Tensor
 
         self.train()
-        for epoch in tqdm(range(epochs)):
+        for epoch in trange(args.epochs):
 
             for batch in dataloader:
-                batch: torch.Tensor = batch.to(device).float()
+                batch: torch.Tensor = batch.to(self.device).float()
                 size = batch.size(0)
 
                 # update disc, lock gen to save computation
-                for _ in range(kkd):
+                for _ in range(args.kkd):
                     optimizer_disc.zero_grad()
                     optimizer_gen.zero_grad()
 
@@ -128,7 +127,7 @@ class WGAN_SIMPLE(Module):
                     optimizer_disc.step()
 
                 # update gen, lock disc
-                for _ in range(kkg):
+                for _ in range(args.kkg):
                     optimizer_disc.zero_grad()
                     optimizer_gen.zero_grad()
 
@@ -143,14 +142,14 @@ class WGAN_SIMPLE(Module):
 
                     optimizer_gen.step()
 
-                if use_wandb:
+                if args.use_wandb:
                     wandb.log({"disc_loss": disc_loss,
                               "gen_loss": gen_loss,
                                "loss": -neg_wd})
 
             if (epoch + 1) % 10 == 0:
-                avg, std, emd = eval_model(self, normalized_data)
-                if use_wandb:
+                if args.use_wandb:
+                    avg, std, emd = eval_model(self, normalized_data)
                     wandb.log({"avg": avg, 'std': std, 'emd': emd})
 
                 if os.path.exists(output_path):
@@ -204,23 +203,23 @@ class WGAN_SIMPLE(Module):
 
 
 def eval_model(model: WGAN_SIMPLE, data: np.ndarray):
-    dim = data.shape[1]
+    datapoints, n_feat = data.shape
 
     # generate fake data using Generator
-    fake_data = model.generate(50000)
+    fake_data = model.generate(datapoints)
     # compare mean
     real_avg = np.mean(data, axis=0)
     fake_avg = np.mean(fake_data, axis=0)
-    avg_diff_pixel = np.sum(np.absolute(real_avg-fake_avg)) / dim
+    avg_diff_pixel = np.sum(np.absolute(real_avg-fake_avg)) / n_feat
     # compare std
     real_std = np.std(data, axis=0)
     fake_std = np.std(fake_data, axis=0)
-    std_diff_pixel = np.sum(np.absolute(real_std-fake_std)) / dim
+    std_diff_pixel = np.sum(np.absolute(real_std-fake_std)) / n_feat
     # calculate EMD distance
-    distance = np.zeros(dim)
-    for i in range(dim):
+    distance = np.zeros(n_feat)
+    for i in range(n_feat):
         distance[i] = EMD(data[:, i], fake_data[:, i])
-    emd_dist_pixel = np.sum(distance) / dim
+    emd_dist_pixel = np.sum(distance) / n_feat
 
     return avg_diff_pixel, std_diff_pixel, emd_dist_pixel
 
