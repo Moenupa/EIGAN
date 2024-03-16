@@ -1,7 +1,9 @@
-from generative_model import WGAN_SIMPLE, WGAN_SN
+from generative_model import WGAN_SIMPLE
+from model_sagan import SAWGAN
 from process_data import load_csv_with_cache, MinMaxScaler
 
 import argparse
+import os
 from glob import glob
 
 import numpy as np
@@ -28,8 +30,9 @@ def train(args=None):
         wandb.init(project="EIGAN", config=args)
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    model = WGAN_SN(device=device)
+    model = SAWGAN(device=device)
     exp_root = f'{MODEL_ROOT}/{args.model}_lr{args.lr:.0e}_{args.beta1}_b{args.batch_size}'
+    os.makedirs(exp_root)
 
     model.optimize(normed_data, exp_root, use_wandb=args.use_wandb,
                    lr=args.lr, batch_size=args.batch_size,
@@ -49,6 +52,8 @@ def parse_arguments():
                         default=2e-4, help="learning rate for the optimizer")
     parser.add_argument("-b", "--batch-size", type=int,
                         default=128, help="batch size for the optimizer")
+    parser.add_argument("-z", "--uniform-noise", type=bool,
+                        default=True, help="whether to use uniform noise, otherwise normalized noise")
     parser.add_argument("--beta1", type=float,
                         default=0.5, help="beta1 in Adam optimizer")
     parser.add_argument("--beta2", type=float,

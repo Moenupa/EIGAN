@@ -24,6 +24,13 @@ import wandb
 from scipy.stats import wasserstein_distance as EMD
 
 
+def sample_z(*size: int, device: str = 'cpu', uniform: bool = False) -> torch.Tensor:
+    if uniform:
+        return torch.FloatTensor(*size).uniform_(-1, 1).to(device)
+
+    return torch.randn(*size, device=device)
+
+
 class WGAN_SIMPLE(Module):
     """
     Generative Model Architecture
@@ -35,7 +42,7 @@ class WGAN_SIMPLE(Module):
     Citation: Gulrajani, Ahmed & Arjovsky. Improved training of wasserstein gans. Adv. Neural Inf. Process. Syst.
     """
 
-    def __init__(self, ndim: int = 2382, nhid: int = 300, nlatent: int = 100, device="cpu"):
+    def __init__(self, ndim: int = 2382, nhid: int = 300, nlatent: int = 100, uniform_z: bool = True, device="cpu"):
         """
         :param ndim: Number of feature in input data
         :param nhid: Number of hidden units per layer
@@ -48,6 +55,7 @@ class WGAN_SIMPLE(Module):
         self.ndim = ndim
         self.nlatent = nlatent
         self.device = device
+        self.uniform_z = uniform_z
 
         self.gen = nn.Sequential(
             nn.Linear(self.nlatent, nhid),
@@ -77,12 +85,6 @@ class WGAN_SIMPLE(Module):
 
         self.gen.to(device)
         self.disc.to(device)
-        
-    def sample_z(self, *size, is_normalized: bool = False) -> torch.Tensor:
-        if is_normalized:
-            return torch.randn(*size, device=self.device)
-    
-        return torch.FloatTensor(*size).uniform_(-1, 1).to(self.device)
 
     def optimize(self, normalized_data: np.ndarray, output_path, batch_size=128, use_wandb=False, lr=1e-4,
                  betas=(0.5, 0.999), lambda_term=10, epochs: int = 200, kkd: int = 1, kkg: int = 1, device="cpu"):
@@ -111,7 +113,8 @@ class WGAN_SIMPLE(Module):
                     optimizer_disc.zero_grad()
                     optimizer_gen.zero_grad()
 
-                    noise = self.sample_z(size, self.nlatent)
+                    noise = sample_z(size, self.nlatent,
+                                     device=self.device, uniform=self.uniform_z)
                     fake_batch = self.gen(noise).detach()
 
                     disc_fake = self.disc(fake_batch)
@@ -129,7 +132,8 @@ class WGAN_SIMPLE(Module):
                     optimizer_disc.zero_grad()
                     optimizer_gen.zero_grad()
 
-                    noise = self.sample_z(size, self.nlatent)
+                    noise = sample_z(size, self.nlatent,
+                                     device=self.device, uniform=self.uniform_z)
                     fake_batch = self.gen(noise)
 
                     disc_fake = self.disc(fake_batch)
@@ -142,15 +146,15 @@ class WGAN_SIMPLE(Module):
                 if use_wandb:
                     wandb.log({"disc_loss": disc_loss,
                               "gen_loss": gen_loss,
-                               "ewd": -neg_wd})
+                               "loss": -neg_wd})
 
             if (epoch + 1) % 10 == 0:
                 avg, std, emd = eval_model(self, normalized_data)
                 if use_wandb:
                     wandb.log({"avg": avg, 'std': std, 'emd': emd})
-                
+
                 if os.path.exists(output_path):
-                    torch.save(self, f'{output_path}/{epoch}.pt')
+                    torch.save(self.state_dict(), f'{output_path}/{epoch}.pt')
         # Your Code Ends Here
 
     def calculate_gradient_penalty(self, real_images: torch.Tensor, fake_images: torch.Tensor) -> torch.Tensor:
@@ -179,177 +183,44 @@ class WGAN_SIMPLE(Module):
     def load(self, checkpoint):
         self.load_state_dict(checkpoint["model_state_dict"])
 
-    def generate(self, num: int = 50000, normed: bool = False) -> np.ndarray:
+    def generate(self, num: int = 15400) -> np.ndarray:
         fake_data = np.zeros((num, self.ndim))
         # if num is divisible by 100, generate by batch, else generate one by one
         if num % 100 == 0:
-            for i in range(num // 100):
-                l, r = 100 * i, 100 * (i+1)
-                fake_data[l:r, :] = \
-                    self.gen(self.sample_z(100, self.nlatent,
-                             is_normalized=normed)).cpu().detach().numpy()
+            for l in range(0, num, 100):
+                fake_data[l:l+100, :] = self.gen(
+                    sample_z(100, self.nlatent,
+                             device=self.device,
+                             uniform=self.uniform_z)
+                ).cpu().detach().numpy()
         else:
             for i in range(num):
-                fake_data[i, :] = self.gen(self.sample_z(
-                    1, self.nlatent)).cpu().detach().numpy()
+                fake_data[i, :] = self.gen(
+                    sample_z(1, self.nlatent,
+                             device=self.device,
+                             uniform=self.uniform_z)
+                ).cpu().detach().numpy()
         return fake_data
 
 
-class Generator(Module):
-    def __init__(self, ndim: int = 2382, nhid: int = 300, nlatent: int = 100) -> None:
-        super().__init__()
-
-        self.gen = nn.Sequential(
-            spectral_norm(nn.Linear(nlatent, nhid)),
-            nn.LeakyReLU(0.1),
-            nn.Dropout(0.4),
-            spectral_norm(nn.Linear(nhid, nhid)),
-            nn.LeakyReLU(0.1),
-            nn.Dropout(0.4),
-            spectral_norm(nn.Linear(nhid, nhid)),
-            nn.LeakyReLU(0.1),
-            nn.Dropout(0.4),
-            spectral_norm(nn.Linear(nhid, ndim)),
-        )
-
-        self.gen.apply(init_weights)
-
-    def forward(self, z: torch.Tensor) -> torch.Tensor:
-        return self.gen(z)
-
-
-class Discriminator(Module):
-    def __init__(self, ndim: int = 2382, nhid: int = 300) -> None:
-        super().__init__()
-
-        self.disc = (nn.Sequential(
-            spectral_norm(nn.Linear(ndim, nhid)),
-            nn.LeakyReLU(0.1),
-            spectral_norm(nn.Linear(nhid, nhid)),
-            nn.LeakyReLU(0.1),
-            spectral_norm(nn.Linear(nhid, nhid)),
-            nn.LeakyReLU(0.1),
-            spectral_norm(nn.Linear(nhid, 1)),
-        ))
-
-        self.disc.apply(init_weights)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.disc(x)
-
-
-class WGAN_SN(Module):
-    def __init__(self, ndim: int = 2382, nhid: int = 300, nlatent: int = 100, device="cpu") -> None:
-        super().__init__()
-
-        self.ndim = ndim
-        self.nlatent = nlatent
-        self.device = device
-
-        self.gen = Generator(ndim, nhid, nlatent)
-        self.disc = Discriminator(ndim, nhid)
-
-        self.gen.to(device)
-        self.disc.to(device)
-
-    def sample_z(self, *size, is_normalized: bool = False) -> torch.Tensor:
-        if is_normalized:
-            return torch.randn(*size, device=self.device)
-
-        return torch.FloatTensor(*size).uniform_(-1, 1).to(self.device)
-
-    def optimize(self, normalized_data: np.ndarray, output_path: str, batch_size=128, use_wandb=False, lr=1e-4,
-                 betas=(0.5, 0.999), lambda_term=10, epochs: int = 200, kkd: int = 1, kkg: int = 1):
-        map_dataset = AfricaWholeFlatDataset(normalized_data)
-        dataloader = DataLoader(map_dataset, batch_size=batch_size,
-                                shuffle=True, num_workers=8)
-
-        # Your Code Goes Here
-        optimizer_gen = Adam(self.gen.parameters(), lr=lr, betas=betas)
-        optimizer_disc = Adam(self.disc.parameters(), lr=lr, betas=betas)
-
-        disc_fake: torch.Tensor
-        disc_real: torch.Tensor
-
-        self.train()
-        for epoch in tqdm(range(epochs)):
-
-            for batch in dataloader:
-                batch: torch.Tensor = batch.to(self.device).float()
-                size = batch.size(0)
-
-                # update disc, lock gen to save computation
-                for _ in range(kkd):
-                    optimizer_disc.zero_grad()
-                    optimizer_gen.zero_grad()
-
-                    noise = self.sample_z(size, self.nlatent)
-                    fake_batch = self.gen(noise).detach()
-
-                    disc_fake = self.disc(fake_batch)
-                    disc_real = self.disc(batch)
-
-                    disc_loss = disc_fake.mean() - disc_real.mean()
-                    disc_loss.backward()
-
-                    optimizer_disc.step()
-
-                # update gen, lock disc
-                for _ in range(kkg):
-                    optimizer_disc.zero_grad()
-                    optimizer_gen.zero_grad()
-
-                    noise = self.sample_z(size, self.nlatent)
-                    fake_batch = self.gen(noise)
-
-                    disc_fake = self.disc(fake_batch)
-
-                    gen_loss = -disc_fake.mean()
-                    gen_loss.backward()
-
-                    optimizer_gen.step()
-
-                if use_wandb:
-                    wandb.log({"disc_loss": disc_loss,
-                              "gen_loss": gen_loss,
-                               "ewd": -disc_loss})
-
-            if (epoch + 1) % 10 == 0:
-                if use_wandb:
-                    avg, std, emd = eval_model(self, normalized_data)
-                    wandb.log({"avg": avg, 'std': std, 'emd': emd})
-
-                if os.path.exists(output_path):
-                    torch.save({'gen': self.gen, 'disc': self.disc},
-                               f'{output_path}/{epoch}.pt')
-
-
-def eval_model(model: WGAN_SIMPLE, data: np.ndarray, normed: bool = False):
+def eval_model(model: WGAN_SIMPLE, data: np.ndarray):
     dim = data.shape[1]
 
     # generate fake data using Generator
-    fake_data = np.zeros((50000, dim))
-    for i in range(500):
-        l, r = 100 * i, 100 * (i+1)
-        with torch.no_grad():
-            fake_batch = \
-                model.gen(
-                    model.sample_z(100, model.nlatent, is_normalized=normed)
-                ).cpu().detach().numpy()
-        fake_data[l:r, :] = fake_batch
+    fake_data = model.generate(50000)
     # compare mean
     real_avg = np.mean(data, axis=0)
     fake_avg = np.mean(fake_data, axis=0)
-    avg_diff_pixel = np.sum(np.absolute(real_avg-fake_avg))/dim
+    avg_diff_pixel = np.sum(np.absolute(real_avg-fake_avg)) / dim
     # compare std
     real_std = np.std(data, axis=0)
     fake_std = np.std(fake_data, axis=0)
-    std_diff_pixel = np.sum(np.absolute(real_std-fake_std))/dim
+    std_diff_pixel = np.sum(np.absolute(real_std-fake_std)) / dim
     # calculate EMD distance
     distance = np.zeros(dim)
     for i in range(dim):
         distance[i] = EMD(data[:, i], fake_data[:, i])
-    emd_dist_pixel = np.sum(distance)/dim
+    emd_dist_pixel = np.sum(distance) / dim
 
     return avg_diff_pixel, std_diff_pixel, emd_dist_pixel
 
@@ -362,6 +233,4 @@ def init_weights(m):
 
 if __name__ == '__main__':
     # test
-    model = WGAN_SN()
-    print(model.gen)
-    print(model.disc)
+    pass
