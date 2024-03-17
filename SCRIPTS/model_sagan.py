@@ -19,7 +19,7 @@ import wandb
 class SAWGAN(Module):
     """self attention wgan"""
 
-    def __init__(self, n_feat: int = 2382, d_hid: int = 400, d_z: int = 100,
+    def __init__(self, n_feat: int = 2382, d_hid: int = 200, d_z: int = 100,
                  uniform_z: bool = True, device="cpu") -> None:
         super().__init__()
 
@@ -50,14 +50,13 @@ class SAWGAN(Module):
 
     def optimize(self, normalized_data: np.ndarray, output_path: str, args):
         map_dataset = AfricaWholeFlatDataset(normalized_data)
-        map_dataset.data = map_dataset.data.view(1, -1, self.n_feat)
         dataloader = DataLoader(map_dataset, batch_size=args.batch_size,
                                 shuffle=True, num_workers=8)
 
-        # Your Code Goes Here
         betas = (args.beta1, args.beta2)
-        optimizer_gen = AdamW(self.gen.parameters(), lr=args.g_lr, betas=betas)
-        optimizer_disc = AdamW(self.disc.parameters(),
+        optimizer_gen = AdamW(self.gen.parameters(), 
+                              lr=args.g_lr, betas=betas)
+        optimizer_disc = AdamW(self.disc.parameters(), 
                                lr=args.d_lr, betas=betas)
 
         disc_fake: torch.Tensor
@@ -69,13 +68,14 @@ class SAWGAN(Module):
             for batch in dataloader:
                 batch: torch.Tensor = batch.to(self.device).float()
                 size = batch.size(0)
+                batch = batch.view(size, 1, -1)
                 # print(torch.cuda.memory_allocated())
 
                 # update disc, lock gen to save computation
                 for _ in range(args.kkd):
                     optimizer_disc.zero_grad()
 
-                    noise = sample_z(1, size, self.d_z,
+                    noise = sample_z(size, 1, self.d_z,
                                      device=self.device, uniform=self.uniform_z)
                     fake_batch = self.gen(noise).detach()
 
@@ -92,7 +92,7 @@ class SAWGAN(Module):
                     optimizer_disc.zero_grad()
                     optimizer_gen.zero_grad()
 
-                    noise = sample_z(1, size, self.d_z,
+                    noise = sample_z(size, 1, self.d_z,
                                      device=self.device, uniform=self.uniform_z)
                     fake_batch = self.gen(noise)
 
@@ -108,7 +108,7 @@ class SAWGAN(Module):
                               "gen_loss": gen_loss,
                                "loss": -disc_loss})
 
-            if (epoch + 1) % 1 == 0:
+            if (epoch + 1) % 10 == 0:
                 if args.use_wandb:
                     avg, std, emd = eval_model(self, normalized_data)
                     wandb.log({"avg": avg, 'std': std, 'emd': emd})
@@ -121,7 +121,7 @@ class SAWGAN(Module):
         fake_data = np.zeros((n, self.n_feat))
         # if num is divisible by 100, generate by batch, else generate one by one
         for l in range(0, n, 100):
-            noise = sample_z(1, 100, self.d_z,
+            noise = sample_z(100, 1, self.d_z,
                              device=self.device,
                              uniform=self.uniform_z)
             fake_data[l:l+100, :] = \
@@ -144,8 +144,8 @@ class MultiHeadLinear(nn.Module):
 
 
 class SelfAttn(nn.Module):
-    def __init__(self, d_in: int, d_out: int = 400, num_heads: int = 8,
-                 dropout: float = 0.2, bias: bool = True):
+    def __init__(self, d_in: int, d_out: int = 200, num_heads: int = 8,
+                 dropout: float = 0.2, bias: bool = True, sn: bool = True):
         super().__init__()
         assert d_out % num_heads == 0, \
             f'multi-head division err: d_out {d_out} % num_heads {num_heads} != 0'
@@ -155,72 +155,71 @@ class SelfAttn(nn.Module):
         self.d_k = d_out // num_heads
         self.num_heads = num_heads
 
-        self.q = MultiHeadLinear(d_in, num_heads, self.d_k, bias=bias)
-        self.k = MultiHeadLinear(d_in, num_heads, self.d_k, bias=bias)
-        self.v = MultiHeadLinear(d_in, num_heads, self.d_k, bias=True)
+        self.q = MultiHeadLinear(d_in, num_heads, self.d_k, bias=bias, sn=sn)
+        self.k = MultiHeadLinear(d_in, num_heads, self.d_k, bias=bias, sn=sn)
+        self.v = MultiHeadLinear(d_in, num_heads, self.d_k, bias=True, sn=sn)
         self.attn_dropout = nn.Dropout(dropout)
 
-        self.fc = spectral_norm(nn.Linear(d_out, d_out))
+        self.fc = nn.Linear(d_out, d_out)
+        if sn:
+            self.fc = spectral_norm(self.fc)
 
-        self.softmax = nn.Softmax(dim=1)
+        self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x: torch.Tensor):
         """
-            inputs :
-                x : input feature maps (C, B, N)
-            returns :
-                out : self attention value + input feature 
-                attention: (B, N, N)
+        Args:
+        `x`: input feature maps (B, C, I)
+        \n
+        Returns:
+        `out`: output feature maps (B, C, O)
         """
-        C, B, N = x.shape
+        B, C, _ = x.shape
 
         # Q, K are (C, B, d_k, heads)
         Q = self.q(x)
         K = self.k(x)
         V = self.v(x)
 
-        attention = self.softmax(torch.einsum('ibhd,jbhd->ijbh', Q, K)
-                                 / torch.sqrt(torch.tensor(self.d_k, dtype=torch.float32)))
+        attention = self.softmax(torch.einsum('bihd,bjhd->bhij', Q, K)
+                                 / (self.d_k ** 0.5))
         attention = self.attn_dropout(attention)
 
-        out = torch.einsum('ijbh,jbhd->ibhd', attention, V)
-        out = out.view(C, B, -1)
+        out = torch.einsum('bhij,bjhd->bihd', attention, V)
+        out = out.view(B, C, -1)
         out = self.fc(out)
         return out
 
 
 class Generator(nn.Module):
 
-    def __init__(self, d_z: int, d_out: int, d_hid: int = 400):
+    def __init__(self, d_z: int, d_out: int, d_hid: int = 200):
         super().__init__()
 
         self.model = nn.Sequential(
             spectral_norm(nn.Linear(d_z, d_hid)),
             nn.LeakyReLU(0.1),
             nn.Dropout(0.2),
-            SelfAttn(d_hid, d_hid),
+            SelfAttn(d_hid, d_hid, sn=True),
             nn.LeakyReLU(0.1),
             nn.Dropout(0.2),
-            spectral_norm(nn.Linear(d_hid, d_out)),
+            spectral_norm(nn.Linear(d_hid, d_out))
         )
 
     def forward(self, z: torch.Tensor):
-        # z as a (batch, z_dim) tensor
         x = self.model(z)
         return x
 
 
 class Discriminator(nn.Module):
 
-    def __init__(self, d_in: int, d_hid: int = 400):
+    def __init__(self, d_in: int, d_hid: int = 200):
         super().__init__()
 
         self.model = nn.Sequential(
-            SelfAttn(d_in, d_hid),
+            spectral_norm(nn.Linear(d_in, d_hid)),
             nn.LeakyReLU(0.1),
-            spectral_norm(nn.Linear(d_hid, d_hid)),
-            nn.LeakyReLU(0.1),
-            spectral_norm(nn.Linear(d_hid, d_hid)),
+            SelfAttn(d_hid, d_hid, sn=True),
             nn.LeakyReLU(0.1),
             spectral_norm(nn.Linear(d_hid, 1))
         )
