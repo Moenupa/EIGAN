@@ -95,7 +95,8 @@ class WGAN_SIMPLE(Module):
         # Your Code Goes Here
         betas = (args.beta1, args.beta2)
         optimizer_gen = AdamW(self.gen.parameters(), lr=args.g_lr, betas=betas)
-        optimizer_disc = AdamW(self.disc.parameters(), lr=args.d_lr, betas=betas)
+        optimizer_disc = AdamW(self.disc.parameters(),
+                               lr=args.d_lr, betas=betas)
 
         disc_fake: torch.Tensor
         disc_real: torch.Tensor

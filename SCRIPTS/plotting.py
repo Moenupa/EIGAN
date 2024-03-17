@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-
+from tqdm import tqdm
 import seaborn as sns
 import matplotlib.pyplot as plt
 
@@ -31,10 +31,12 @@ def plot_mean_std(fake_distribution: np.ndarray,
 
 
 def plot_distribution(fake: torch.Tensor, real: torch.Tensor, noise: torch.Tensor, model):
-    fig, axes = plt.subplots(1, 3, figsize=(9, 3))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     ax0, ax1, ax2, *_ = axes.flatten()
-    sns.histplot(real[:, 0], color='r', label='real', ax=ax0)
-    sns.histplot(fake[:, 0], color='b', label='fake', ax=ax0)
+    sns.histplot({
+        'feat0 on fake': fake[:, 0],
+        'feat0 on real': real[:, 0],
+    }, ax=ax0, legend=True)
 
     with torch.no_grad():
         model.eval()
@@ -42,10 +44,11 @@ def plot_distribution(fake: torch.Tensor, real: torch.Tensor, noise: torch.Tenso
         _real = model.disc(real).numpy().flatten()
         _random = model.disc(noise).numpy().flatten()
 
-    sns.histplot(_fake, color='b', label='fake', ax=ax1)
-    sns.histplot(_real, color='r', label='real', ax=ax1)
-    sns.histplot(_random, color='g', label='noise', ax=ax1)
-    ax1.legend()
+    sns.histplot({
+        'fake': _fake,
+        'real': _real,
+        'noise': _random,
+    }, ax=ax1, legend=True)
 
     diff = real - fake
     sns.histplot(diff.mean(dim=0).numpy().flatten(), ax=ax2)
@@ -61,13 +64,14 @@ def plot_distribution(fake: torch.Tensor, real: torch.Tensor, noise: torch.Tenso
     # cord[neighbors], neighbors
     # 1333 because I like the number
     sample_id = np.array([1333, 2344, 1034, 2319,  734,  555,  531])
-    d = {}
-    for i_feat in sample_id[:3]:
-        d[f'real_{i_feat}'] = real[:, i_feat].numpy().flatten()
-        d[f'fake_{i_feat}'] = fake[:, i_feat].numpy().flatten()
-    sample = pd.DataFrame(d)
-    sns.pairplot(sample,
-                 kind='kde')
+    origin = {f'real_{sample_id[0]}': real[:, sample_id[0]].numpy().flatten(),
+              f'fake_{sample_id[0]}': fake[:, sample_id[0]].numpy().flatten(), }
+    for neighbor in tqdm(sample_id[1:4]):
+        sample = pd.DataFrame({
+            **origin,
+            f'real_{neighbor}': real[:, neighbor].numpy().flatten(),
+            f'fake_{neighbor}': fake[:, neighbor].numpy().flatten()})
+        sns.pairplot(sample, kind='kde', corner=True)
 
 
 def plot_slice(fake, real, cord: np.ndarray, n: int = 1):

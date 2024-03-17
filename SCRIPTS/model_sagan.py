@@ -9,7 +9,7 @@ import torch
 from torch import nn
 from torch.nn import Module
 from torch.nn.utils.parametrizations import spectral_norm
-from torch.optim import Adam
+from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
 from tqdm import tqdm, trange
@@ -32,10 +32,10 @@ class SAWGAN(Module):
 
         self.gen.to(device)
         self.disc.to(device)
-        
+
         self.gen.apply(self.weights_init)
         self.disc.apply(self.weights_init)
-        
+
     def weights_init(self, m):
         classname = m.__class__.__name__
         if 'Conv' in classname:
@@ -44,22 +44,23 @@ class SAWGAN(Module):
             nn.init.normal_(m.weight.data, 1.0, 0.02)
             nn.init.constant_(m.bias.data, 0.0)
 
-    def optimize(self, normalized_data: np.ndarray, output_path: str, batch_size=128, use_wandb=False, lr=2e-4,
-                 betas=(0.5, 0.999), epochs: int = 10, kkd: int = 1, kkg: int = 1):
+    def optimize(self, normalized_data: np.ndarray, output_path: str, args):
         map_dataset = AfricaWholeFlatDataset(normalized_data)
         map_dataset.data = map_dataset.data.view(-1, 1, self.n_feat)
-        dataloader = DataLoader(map_dataset, batch_size=batch_size,
+        dataloader = DataLoader(map_dataset, batch_size=args.batch_size,
                                 shuffle=True, num_workers=8)
 
         # Your Code Goes Here
-        optimizer_gen = Adam(self.gen.parameters(), lr=lr, betas=betas)
-        optimizer_disc = Adam(self.disc.parameters(), lr=lr, betas=betas)
+        betas = (args.beta1, args.beta2)
+        optimizer_gen = AdamW(self.gen.parameters(), lr=args.g_lr, betas=betas)
+        optimizer_disc = AdamW(self.disc.parameters(),
+                               lr=args.d_lr, betas=betas)
 
         disc_fake: torch.Tensor
         disc_real: torch.Tensor
 
         self.train()
-        for epoch in trange(epochs):
+        for epoch in trange(args.epochs):
 
             for batch in dataloader:
                 batch: torch.Tensor = batch.to(self.device).float()
@@ -67,7 +68,7 @@ class SAWGAN(Module):
                 # print(torch.cuda.memory_allocated())
 
                 # update disc, lock gen to save computation
-                for _ in range(kkd):
+                for _ in range(args.kkd):
                     optimizer_disc.zero_grad()
 
                     noise = sample_z(size, 1, self.n_feat,
@@ -83,7 +84,7 @@ class SAWGAN(Module):
                     optimizer_disc.step()
 
                 # update gen, lock disc
-                for _ in range(kkg):
+                for _ in range(args.kkg):
                     optimizer_disc.zero_grad()
                     optimizer_gen.zero_grad()
 
@@ -98,13 +99,13 @@ class SAWGAN(Module):
 
                     optimizer_gen.step()
 
-                if use_wandb:
+                if args.use_wandb:
                     wandb.log({"disc_loss": disc_loss,
                               "gen_loss": gen_loss,
                                "loss": -disc_loss})
 
             if (epoch + 1) % 1 == 0:
-                if use_wandb:
+                if args.use_wandb:
                     avg, std, emd = eval_model(self, normalized_data)
                     wandb.log({"avg": avg, 'std': std, 'emd': emd})
 
@@ -119,7 +120,8 @@ class SAWGAN(Module):
             noise = sample_z(100, 1, self.n_feat,
                              device=self.device,
                              uniform=self.uniform_z)
-            fake_data[l:l+100, :] = self.gen(noise).cpu().detach().numpy().squeeze(axis=1)
+            fake_data[l:l+100, :] = \
+                self.gen(noise).cpu().detach().numpy().squeeze(axis=1)
         return fake_data
 
 
