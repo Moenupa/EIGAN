@@ -14,21 +14,22 @@ from torch.utils.data import DataLoader
 
 from tqdm import tqdm, trange
 import wandb
-from scipy.stats import wasserstein_distance as EMD
 
 
 class SAWGAN(Module):
     """self attention wgan"""
 
-    def __init__(self, n_feat: int = 2382, hid_dim: int = 64, uniform_z: bool = True, device="cpu") -> None:
+    def __init__(self, n_feat: int = 2382, d_hid: int = 400, d_z: int = 100,
+                 uniform_z: bool = True, device="cpu") -> None:
         super().__init__()
 
         self.n_feat = n_feat
+        self.d_z = d_z
         self.device = device
         self.uniform_z = uniform_z
 
-        self.gen = Generator(n_feat, hid_dim)
-        self.disc = Discriminator(n_feat, hid_dim)
+        self.gen = Generator(d_z, n_feat, d_hid)
+        self.disc = Discriminator(n_feat, d_hid)
 
         self.gen.to(device)
         self.disc.to(device)
@@ -38,7 +39,10 @@ class SAWGAN(Module):
 
     def weights_init(self, m):
         classname = m.__class__.__name__
-        if 'Conv' in classname:
+        if type(m) == nn.Linear:
+            nn.init.xavier_uniform_(m.weight)
+            m.bias.data.fill_(0.01)
+        elif 'Conv' in classname:
             nn.init.normal_(m.weight.data, 0.0, 0.02)
         elif 'BatchNorm' in classname:
             nn.init.normal_(m.weight.data, 1.0, 0.02)
@@ -46,7 +50,7 @@ class SAWGAN(Module):
 
     def optimize(self, normalized_data: np.ndarray, output_path: str, args):
         map_dataset = AfricaWholeFlatDataset(normalized_data)
-        map_dataset.data = map_dataset.data.view(-1, 1, self.n_feat)
+        map_dataset.data = map_dataset.data.view(1, -1, self.n_feat)
         dataloader = DataLoader(map_dataset, batch_size=args.batch_size,
                                 shuffle=True, num_workers=8)
 
@@ -71,7 +75,7 @@ class SAWGAN(Module):
                 for _ in range(args.kkd):
                     optimizer_disc.zero_grad()
 
-                    noise = sample_z(size, 1, self.n_feat,
+                    noise = sample_z(1, size, self.d_z,
                                      device=self.device, uniform=self.uniform_z)
                     fake_batch = self.gen(noise).detach()
 
@@ -88,7 +92,7 @@ class SAWGAN(Module):
                     optimizer_disc.zero_grad()
                     optimizer_gen.zero_grad()
 
-                    noise = sample_z(size, 1, self.n_feat,
+                    noise = sample_z(1, size, self.d_z,
                                      device=self.device, uniform=self.uniform_z)
                     fake_batch = self.gen(noise)
 
@@ -117,102 +121,110 @@ class SAWGAN(Module):
         fake_data = np.zeros((n, self.n_feat))
         # if num is divisible by 100, generate by batch, else generate one by one
         for l in range(0, n, 100):
-            noise = sample_z(100, 1, self.n_feat,
+            noise = sample_z(1, 100, self.d_z,
                              device=self.device,
                              uniform=self.uniform_z)
             fake_data[l:l+100, :] = \
-                self.gen(noise).cpu().detach().numpy().squeeze(axis=1)
+                self.gen(noise).cpu().detach().numpy().squeeze()
         return fake_data
 
 
-class SelfAttn(nn.Module):
-    def __init__(self, in_dim: int):
+class MultiHeadLinear(nn.Module):
+    def __init__(self, d_in: int, heads: int, d_k: int, bias: bool, sn: bool = True) -> None:
         super().__init__()
+        self.linear = nn.Linear(d_in, heads * d_k, bias=bias)
+        if sn:
+            self.linear = spectral_norm(self.linear)
+        self.heads = heads
+        self.d_k = d_k
 
-        self.q = spectral_norm(nn.Conv1d(in_channels=in_dim,
-                                         out_channels=in_dim // 8,
-                                         kernel_size=1))
-        self.k = spectral_norm(nn.Conv1d(in_channels=in_dim,
-                                         out_channels=in_dim // 8,
-                                         kernel_size=1))
-        self.v = spectral_norm(nn.Conv1d(in_channels=in_dim,
-                                         out_channels=in_dim,
-                                         kernel_size=1))
-        self.gamma = nn.Parameter(torch.tensor(0.01))
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.linear(x).view(*x.shape[:-1], self.heads, self.d_k)
+        return x
 
-        self.softmax = nn.Softmax(dim=-1)
+
+class SelfAttn(nn.Module):
+    def __init__(self, d_in: int, d_out: int = 400, num_heads: int = 8,
+                 dropout: float = 0.2, bias: bool = True):
+        super().__init__()
+        assert d_out % num_heads == 0, \
+            f'multi-head division err: d_out {d_out} % num_heads {num_heads} != 0'
+
+        self.d_in = d_in
+        self.d_out = d_out
+        self.d_k = d_out // num_heads
+        self.num_heads = num_heads
+
+        self.q = MultiHeadLinear(d_in, num_heads, self.d_k, bias=bias)
+        self.k = MultiHeadLinear(d_in, num_heads, self.d_k, bias=bias)
+        self.v = MultiHeadLinear(d_in, num_heads, self.d_k, bias=True)
+        self.attn_dropout = nn.Dropout(dropout)
+
+        self.fc = spectral_norm(nn.Linear(d_out, d_out))
+
+        self.softmax = nn.Softmax(dim=1)
 
     def forward(self, x: torch.Tensor):
         """
             inputs :
-                x : input feature maps (B, C, N)
+                x : input feature maps (C, B, N)
             returns :
                 out : self attention value + input feature 
                 attention: (B, N, N)
         """
-        B, C, N = x.shape
+        C, B, N = x.shape
 
-        # Q, K are (B, C, N)
-        Q = self.q(x).view(B, -1, N).permute(0, 2, 1)
-        K = self.k(x).view(B, -1, N)
-        V = self.v(x).view(B, -1, N)
+        # Q, K are (C, B, d_k, heads)
+        Q = self.q(x)
+        K = self.k(x)
+        V = self.v(x)
 
-        attention = self.softmax(torch.bmm(Q, K))
-        # attention = self.softmax(torch.einsum('biu,bjv->bvu', Q, K))
+        attention = self.softmax(torch.einsum('ibhd,jbhd->ijbh', Q, K)
+                                 / torch.sqrt(torch.tensor(self.d_k, dtype=torch.float32)))
+        attention = self.attn_dropout(attention)
 
-        out = torch.bmm(V, attention.permute(0, 2, 1))
-        out = out.view(B, C, N)
-
-        out = self.gamma * out + x
-        return out, attention
+        out = torch.einsum('ijbh,jbhd->ibhd', attention, V)
+        out = out.view(C, B, -1)
+        out = self.fc(out)
+        return out
 
 
 class Generator(nn.Module):
 
-    def __init__(self, n_feat: int = 2382, hid_dim: int = 8):
+    def __init__(self, d_z: int, d_out: int, d_hid: int = 400):
         super().__init__()
 
-        self.l1 = nn.Sequential(
-            spectral_norm(nn.Conv1d(1, hid_dim, kernel_size=1)),
-            nn.BatchNorm1d(hid_dim),
-            nn.ReLU()
-        )
-        self.attn = SelfAttn(hid_dim)
-
-        self.l2 = nn.Sequential(
-            spectral_norm(nn.Conv1d(hid_dim, 1, kernel_size=1)),
-            nn.BatchNorm1d(1),
-            nn.ReLU()
+        self.model = nn.Sequential(
+            spectral_norm(nn.Linear(d_z, d_hid)),
+            nn.LeakyReLU(0.1),
+            nn.Dropout(0.2),
+            SelfAttn(d_hid, d_hid),
+            nn.LeakyReLU(0.1),
+            nn.Dropout(0.2),
+            spectral_norm(nn.Linear(d_hid, d_out)),
         )
 
     def forward(self, z: torch.Tensor):
-        # z as a (batch, z_dim, n_feat) tensor
-
-        x = self.l1(z)
-        x, p = self.attn(x)
-        x = self.l2(x)
-
-        return x  # , p
+        # z as a (batch, z_dim) tensor
+        x = self.model(z)
+        return x
 
 
 class Discriminator(nn.Module):
 
-    def __init__(self, n_feat: int = 2382, hid_dim: int = 8):
+    def __init__(self, d_in: int, d_hid: int = 400):
         super().__init__()
 
-        self.l1 = nn.Sequential(
-            spectral_norm(nn.Conv1d(1, hid_dim, kernel_size=1)),
+        self.model = nn.Sequential(
+            SelfAttn(d_in, d_hid),
             nn.LeakyReLU(0.1),
-            nn.Dropout(0.4)
+            spectral_norm(nn.Linear(d_hid, d_hid)),
+            nn.LeakyReLU(0.1),
+            spectral_norm(nn.Linear(d_hid, d_hid)),
+            nn.LeakyReLU(0.1),
+            spectral_norm(nn.Linear(d_hid, 1))
         )
-        self.attn = SelfAttn(hid_dim)
-
-        self.fc = nn.Linear(n_feat * hid_dim, 1)
 
     def forward(self, x: torch.Tensor):
-        x = self.l1(x)
-        x, p = self.attn(x)
-        x = x.flatten(1, -1)
-        x = self.fc(x)
-
-        return x  # , p
+        x = self.model(x)
+        return x

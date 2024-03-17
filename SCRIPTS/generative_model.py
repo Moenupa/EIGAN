@@ -41,7 +41,8 @@ class WGAN_SIMPLE(Module):
     Citation: Gulrajani, Ahmed & Arjovsky. Improved training of wasserstein gans. Adv. Neural Inf. Process. Syst.
     """
 
-    def __init__(self, ndim: int = 2382, nhid: int = 300, nlatent: int = 100, uniform_z: bool = True, device="cpu"):
+    def __init__(self, ndim: int = 2382, nhid: int = 300, nlatent: int = 100,
+                 drop_out_prob: float = 0.2, uniform_z: bool = True, device="cpu"):
         """
         :param ndim: Number of feature in input data
         :param nhid: Number of hidden units per layer
@@ -59,13 +60,13 @@ class WGAN_SIMPLE(Module):
         self.gen = nn.Sequential(
             nn.Linear(self.nlatent, nhid),
             nn.LeakyReLU(0.1),
-            nn.Dropout(0.4),
+            nn.Dropout(drop_out_prob),
             nn.Linear(nhid, nhid),
             nn.LeakyReLU(0.1),
-            nn.Dropout(0.4),
+            nn.Dropout(drop_out_prob),
             nn.Linear(nhid, nhid),
             nn.LeakyReLU(0.1),
-            nn.Dropout(0.4),
+            nn.Dropout(drop_out_prob),
             nn.Linear(nhid, ndim),
         )
 
