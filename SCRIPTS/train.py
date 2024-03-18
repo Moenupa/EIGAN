@@ -26,15 +26,17 @@ def train(args=None):
     scaler.fit(data)
     normed_data = scaler.transform(data)
 
-    if args.use_wandb:
-        wandb.init(project="EIGAN", config=args)
-
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    model = SAWGAN(uniform_z=args.uniform_z, device=device)
+    if "SA" in args.model:
+        model = SAWGAN(uniform_z=args.uniform_z, device=device)
+    else:
+        model = WGAN_SIMPLE(uniform_z=args.uniform_z, device=device)
     exp_root = f'{MODEL_ROOT}/{args.model}_glr{args.g_lr:.0e}_dlr{args.d_lr:.0e}' \
                f'_beta{args.beta1}_{args.beta2}_b{args.batch_size}'
     os.makedirs(exp_root, exist_ok=True)
 
+    if args.use_wandb:
+        wandb.init(project="EIGAN", config=args)
     model.optimize(normed_data, exp_root, args)
 
     return model

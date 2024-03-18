@@ -19,7 +19,7 @@ import wandb
 class SAWGAN(Module):
     """self attention wgan"""
 
-    def __init__(self, n_feat: int = 2382, d_hid: int = 200, d_z: int = 100,
+    def __init__(self, n_feat: int = 2382, d_hid: int = 800, d_z: int = 100,
                  uniform_z: bool = True, device="cpu") -> None:
         super().__init__()
 
@@ -54,9 +54,9 @@ class SAWGAN(Module):
                                 shuffle=True, num_workers=8)
 
         betas = (args.beta1, args.beta2)
-        optimizer_gen = AdamW(self.gen.parameters(), 
+        optimizer_gen = AdamW(self.gen.parameters(),
                               lr=args.g_lr, betas=betas)
-        optimizer_disc = AdamW(self.disc.parameters(), 
+        optimizer_disc = AdamW(self.disc.parameters(),
                                lr=args.d_lr, betas=betas)
 
         disc_fake: torch.Tensor
@@ -158,13 +158,14 @@ class SelfAttn(nn.Module):
         self.q = MultiHeadLinear(d_in, num_heads, self.d_k, bias=bias, sn=sn)
         self.k = MultiHeadLinear(d_in, num_heads, self.d_k, bias=bias, sn=sn)
         self.v = MultiHeadLinear(d_in, num_heads, self.d_k, bias=True, sn=sn)
+        self.softmax = nn.Softmax(dim=-1)
         self.attn_dropout = nn.Dropout(dropout)
 
         self.fc = nn.Linear(d_out, d_out)
         if sn:
             self.fc = spectral_norm(self.fc)
 
-        self.softmax = nn.Softmax(dim=-1)
+        self.norm = nn.BatchNorm1d(d_out)
 
     def forward(self, x: torch.Tensor):
         """
@@ -188,6 +189,9 @@ class SelfAttn(nn.Module):
         out = torch.einsum('bhij,bjhd->bihd', attention, V)
         out = out.view(B, C, -1)
         out = self.fc(out)
+        out = out.view(B, -1, C)
+        out = self.norm(out)
+        out = out.view(B, C, -1)
         return out
 
 
@@ -199,10 +203,8 @@ class Generator(nn.Module):
         self.model = nn.Sequential(
             spectral_norm(nn.Linear(d_z, d_hid)),
             nn.LeakyReLU(0.1),
-            nn.Dropout(0.2),
             SelfAttn(d_hid, d_hid, sn=True),
             nn.LeakyReLU(0.1),
-            nn.Dropout(0.2),
             spectral_norm(nn.Linear(d_hid, d_out))
         )
 
