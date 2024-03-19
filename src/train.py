@@ -1,22 +1,13 @@
+from configs import DATA_ROOT, MODEL_ROOT, SCRIPT_ROOT
 from generative_model import WGAN_SIMPLE
 from model_sagan import SAWGAN
 from process_data import load_csv_with_cache, MinMaxScaler
 
 import argparse
 import os
-from glob import glob
 
-import numpy as np
 import torch
 import wandb
-
-
-DATA_ROOT = './DATA'
-MODEL_ROOT = './MODEL'
-SCRIPT_ROOT = './SCRIPTS'
-data_paths, model_paths = glob(f'{DATA_ROOT}/*'), glob(f'{MODEL_ROOT}/*')
-assert data_paths
-assert model_paths
 
 
 def train(args=None):

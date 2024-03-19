@@ -30,7 +30,10 @@ def plot_mean_std(fake_distribution: np.ndarray,
         plt.colorbar(_fig, ax=_ax)
 
 
-def plot_distribution(fake: torch.Tensor, real: torch.Tensor, noise: torch.Tensor, model):
+def plot_disc_scores(fake: torch.Tensor, real: torch.Tensor, noise: torch.Tensor, model):
+    assert type(fake) == type(real) == type(noise) == torch.Tensor, \
+        f'{type(fake), type(real), type(noise)}: input must be torch.Tensor'
+
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     ax0, ax1, ax2, *_ = axes.flatten()
     sns.histplot({
@@ -38,11 +41,20 @@ def plot_distribution(fake: torch.Tensor, real: torch.Tensor, noise: torch.Tenso
         'feat0 on real': real[:, 0],
     }, ax=ax0, legend=True)
 
+    diff = real - fake
+    sns.histplot(diff.mean(dim=0).numpy().flatten(), kde=True, ax=ax2)
+    ax2.set_xlim(-1, 1)
+
     with torch.no_grad():
         model.eval()
-        _fake = model.disc(fake).numpy().flatten()
-        _real = model.disc(real).numpy().flatten()
-        _random = model.disc(noise).numpy().flatten()
+        if 'SA' in model.__class__.__name__:
+            N = noise.shape[-1]
+            fake = fake.view(-1, 1, N)
+            real = real.view(-1, 1, N)
+            noise = noise.view(-1, 1, N)
+        _fake = model.disc(fake).numpy().squeeze().flatten()
+        _real = model.disc(real).numpy().squeeze().flatten()
+        _random = model.disc(noise).numpy().squeeze().flatten()
 
     sns.histplot({
         'fake': _fake,
@@ -50,31 +62,32 @@ def plot_distribution(fake: torch.Tensor, real: torch.Tensor, noise: torch.Tenso
         'noise': _random,
     }, ax=ax1, legend=True)
 
-    diff = real - fake
-    sns.histplot(diff.mean(dim=0).numpy().flatten(), ax=ax2)
-    ax2.set_xlim(-1, 1)
-
     ax0.set_title('Distribution on Feature 0')
     ax1.set_title('Discriminator Output')
     ax2.set_title('Mean Difference Real-Fake')
 
+
+def plot_pairwise(fake: np.ndarray, real: np.ndarray):
+    """
+    plot co-distribution pairplots of a cherry-picked point and its nearest neighbors
+    """
     # 7 points centered around point indexed 1333, obtained by:
     # point = cord[1333]
     # neighbors = np.argsort(np.linalg.norm(cord - point, axis=1))[:7]
     # cord[neighbors], neighbors
     # 1333 because I like the number
     sample_id = np.array([1333, 2344, 1034, 2319,  734,  555,  531])
-    origin = {f'real_{sample_id[0]}': real[:, sample_id[0]].numpy().flatten(),
-              f'fake_{sample_id[0]}': fake[:, sample_id[0]].numpy().flatten(), }
+    origin = {f'real_{sample_id[0]}': real[:, sample_id[0]].flatten(),
+              f'fake_{sample_id[0]}': fake[:, sample_id[0]].flatten(), }
     for neighbor in tqdm(sample_id[1:4]):
         sample = pd.DataFrame({
             **origin,
-            f'real_{neighbor}': real[:, neighbor].numpy().flatten(),
-            f'fake_{neighbor}': fake[:, neighbor].numpy().flatten()})
+            f'real_{neighbor}': real[:, neighbor].flatten(),
+            f'fake_{neighbor}': fake[:, neighbor].flatten()})
         sns.pairplot(sample, kind='kde', corner=True)
 
 
-def plot_slice(fake, real, cord: np.ndarray, n: int = 1):
+def plot_slice(fake, real, cord: np.ndarray, n: int = 2):
     """
     plot n random slices of real vs fake data
     """

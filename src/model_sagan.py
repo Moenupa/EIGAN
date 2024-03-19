@@ -140,7 +140,7 @@ class MultiHeadLinear(nn.Module):
 
 class SelfAttn(nn.Module):
     def __init__(self, d_in: int, d_out: int, num_heads: int = 8,
-                 attn_drop: float = 0.2, fc_drop: float = 0.2, 
+                 attn_drop: float = 0.2, fc_drop: float = 0.2,
                  bias: bool = True, sn: bool = True):
         super().__init__()
         assert d_out % num_heads == 0, \
@@ -156,7 +156,7 @@ class SelfAttn(nn.Module):
         self.v = MultiHeadLinear(d_in, num_heads, self.d_k, bias=True, sn=sn)
         self.softmax = nn.Softmax(dim=-1)
         self.attn_dropout = nn.Dropout(attn_drop)
-        
+
         self.act = nn.LeakyReLU(0.1)
         self.fc_dropout = nn.Dropout(fc_drop)
 
@@ -179,7 +179,7 @@ class SelfAttn(nn.Module):
         K = self.k(x)
         V = self.v(x)
 
-        attention = self.softmax(self.d_k ** -.5 * 
+        attention = self.softmax(self.d_k ** -.5 *
                                  torch.einsum('bihd,bjhd->bhij', Q, K))
         attention = self.attn_dropout(attention)
 
@@ -193,11 +193,10 @@ class SelfAttn(nn.Module):
 
 class Generator(nn.Module):
 
-    def __init__(self, d_z: int, d_out: int, _: int):
+    def __init__(self, d_z: int, d_out: int, d_hid: int):
         super().__init__()
-        
-        self.upsample_z = spectral_norm(nn.Linear(d_z, d_out))
 
+        self.upsample_z = spectral_norm(nn.Linear(d_z, d_out))
         self.attn = SelfAttn(d_out, d_out, sn=True, fc_drop=0.2, num_heads=6)
 
     def forward(self, z: torch.Tensor):
@@ -210,12 +209,12 @@ class Discriminator(nn.Module):
 
     def __init__(self, d_in: int, d_hid: int):
         super().__init__()
-        
+
         self.attn = nn.Sequential(
             SelfAttn(d_in, d_hid, sn=True, fc_drop=0.0),
             # SelfAttn(d_hid, d_hid, sn=True, fc_drop=0.0),
         )
-        
+
         self.downsample_out = spectral_norm(nn.Linear(d_hid, 1))
 
     def forward(self, x: torch.Tensor):
