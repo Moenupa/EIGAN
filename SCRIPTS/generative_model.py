@@ -91,7 +91,7 @@ class WGAN_SIMPLE(Module):
         # construct dataset and dataloader for batch training
         map_dataset = AfricaWholeFlatDataset(normalized_data)
         dataloader = DataLoader(map_dataset, batch_size=args.batch_size,
-                                shuffle=True, num_workers=8)
+                                shuffle=True)
 
         # Your Code Goes Here
         betas = (args.beta1, args.beta2)

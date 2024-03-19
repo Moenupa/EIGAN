@@ -38,20 +38,15 @@ class SAWGAN(Module):
         self.disc.apply(self.weights_init)
 
     def weights_init(self, m):
-        classname = m.__class__.__name__
+        # classname = m.__class__.__name__
         if type(m) == nn.Linear:
             nn.init.xavier_uniform_(m.weight)
-            m.bias.data.fill_(0.01)
-        elif 'Conv' in classname:
-            nn.init.normal_(m.weight.data, 0.0, 0.02)
-        elif 'BatchNorm' in classname:
-            nn.init.normal_(m.weight.data, 1.0, 0.02)
             nn.init.constant_(m.bias.data, 0.0)
 
     def optimize(self, normalized_data: np.ndarray, output_path: str, args):
         map_dataset = AfricaWholeFlatDataset(normalized_data)
         dataloader = DataLoader(map_dataset, batch_size=args.batch_size,
-                                shuffle=True, num_workers=8)
+                                shuffle=True)
 
         betas = (args.beta1, args.beta2)
         optimizer_gen = AdamW(self.gen.parameters(),
@@ -105,7 +100,7 @@ class SAWGAN(Module):
 
                 if args.use_wandb:
                     wandb.log({"disc_loss": disc_loss,
-                              "gen_loss": gen_loss,
+                              "gen_loss": -gen_loss,
                                "loss": -disc_loss})
 
             if (epoch + 1) % 10 == 0:
@@ -144,8 +139,9 @@ class MultiHeadLinear(nn.Module):
 
 
 class SelfAttn(nn.Module):
-    def __init__(self, d_in: int, d_out: int = 200, num_heads: int = 8,
-                 dropout: float = 0.2, bias: bool = True, sn: bool = True):
+    def __init__(self, d_in: int, d_out: int, num_heads: int = 8,
+                 attn_drop: float = 0.2, fc_drop: float = 0.2, 
+                 bias: bool = True, sn: bool = True):
         super().__init__()
         assert d_out % num_heads == 0, \
             f'multi-head division err: d_out {d_out} % num_heads {num_heads} != 0'
@@ -159,13 +155,14 @@ class SelfAttn(nn.Module):
         self.k = MultiHeadLinear(d_in, num_heads, self.d_k, bias=bias, sn=sn)
         self.v = MultiHeadLinear(d_in, num_heads, self.d_k, bias=True, sn=sn)
         self.softmax = nn.Softmax(dim=-1)
-        self.attn_dropout = nn.Dropout(dropout)
+        self.attn_dropout = nn.Dropout(attn_drop)
+        
+        self.act = nn.LeakyReLU(0.1)
+        self.fc_dropout = nn.Dropout(fc_drop)
 
         self.fc = nn.Linear(d_out, d_out)
         if sn:
             self.fc = spectral_norm(self.fc)
-
-        self.norm = nn.BatchNorm1d(d_out)
 
     def forward(self, x: torch.Tensor):
         """
@@ -182,50 +179,46 @@ class SelfAttn(nn.Module):
         K = self.k(x)
         V = self.v(x)
 
-        attention = self.softmax(torch.einsum('bihd,bjhd->bhij', Q, K)
-                                 / (self.d_k ** 0.5))
+        attention = self.softmax(self.d_k ** -.5 * 
+                                 torch.einsum('bihd,bjhd->bhij', Q, K))
         attention = self.attn_dropout(attention)
 
         out = torch.einsum('bhij,bjhd->bihd', attention, V)
         out = out.view(B, C, -1)
         out = self.fc(out)
-        out = out.view(B, -1, C)
-        out = self.norm(out)
-        out = out.view(B, C, -1)
+        out = self.act(out)
+        out = self.fc_dropout(out)
         return out
 
 
 class Generator(nn.Module):
 
-    def __init__(self, d_z: int, d_out: int, d_hid: int = 200):
+    def __init__(self, d_z: int, d_out: int, _: int):
         super().__init__()
+        
+        self.upsample_z = spectral_norm(nn.Linear(d_z, d_out))
 
-        self.model = nn.Sequential(
-            spectral_norm(nn.Linear(d_z, d_hid)),
-            nn.LeakyReLU(0.1),
-            SelfAttn(d_hid, d_hid, sn=True),
-            nn.LeakyReLU(0.1),
-            spectral_norm(nn.Linear(d_hid, d_out))
-        )
+        self.attn = SelfAttn(d_out, d_out, sn=True, fc_drop=0.2, num_heads=6)
 
     def forward(self, z: torch.Tensor):
-        x = self.model(z)
+        x = self.upsample_z(z)
+        x = x + self.attn(x)
         return x
 
 
 class Discriminator(nn.Module):
 
-    def __init__(self, d_in: int, d_hid: int = 200):
+    def __init__(self, d_in: int, d_hid: int):
         super().__init__()
-
-        self.model = nn.Sequential(
-            spectral_norm(nn.Linear(d_in, d_hid)),
-            nn.LeakyReLU(0.1),
-            SelfAttn(d_hid, d_hid, sn=True),
-            nn.LeakyReLU(0.1),
-            spectral_norm(nn.Linear(d_hid, 1))
+        
+        self.attn = nn.Sequential(
+            SelfAttn(d_in, d_hid, sn=True, fc_drop=0.0),
+            # SelfAttn(d_hid, d_hid, sn=True, fc_drop=0.0),
         )
+        
+        self.downsample_out = spectral_norm(nn.Linear(d_hid, 1))
 
     def forward(self, x: torch.Tensor):
-        x = self.model(x)
+        x = self.attn(x)
+        x = self.downsample_out(x)
         return x

@@ -13,6 +13,7 @@ import wandb
 
 DATA_ROOT = './DATA'
 MODEL_ROOT = './MODEL'
+SCRIPT_ROOT = './SCRIPTS'
 data_paths, model_paths = glob(f'{DATA_ROOT}/*'), glob(f'{MODEL_ROOT}/*')
 assert data_paths
 assert model_paths
@@ -37,7 +38,12 @@ def train(args=None):
 
     if args.use_wandb:
         wandb.init(project="EIGAN", config=args)
+        wandb.save(f"{SCRIPT_ROOT}/model_sagan.py" if type(model) == SAWGAN else
+                   f"{SCRIPT_ROOT}/generative_model.py")
+    print('model saved to:', exp_root)
     model.optimize(normed_data, exp_root, args)
+    if args.use_wandb:
+        wandb.save(f"{exp_root}/{args.epochs - 1}.pt")
 
     return model
 
@@ -65,6 +71,8 @@ def parse_arguments():
                         default=1, help="disc update frequency")
     parser.add_argument("--kkg", type=int,
                         default=1, help="gen update frequency")
+    parser.add_argument("--eval-interval", type=int,
+                        default=10, help="evaluation interval")
     parser.add_argument("--use-wandb", action=argparse.BooleanOptionalAction,
                         help="whether to use wandb for logging")
     args = parser.parse_args()
